@@ -1,0 +1,211 @@
+---
+title: "ML & AI project"
+author: "Tanay Sawant 19203264"
+date: "26/04/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r warning=FALSE}
+library(keras)
+library(tfruns)
+
+load("data_activity_recognition.RData")
+dim(x_train) #observing the dimension of x_train.
+
+x_train=data.matrix(array_reshape(x_train,c(nrow(x_train),125*45)))
+x_test=data.matrix(array_reshape(x_test,c(nrow(x_test),125*45)))
+dim(x_train) #observing the dimension of x_train after reshaping.
+
+y_train=data.matrix(data.frame(y_train))
+y_test=data.matrix(data.frame(y_test))
+
+#one-hot encoding.
+y_train=to_categorical(y_train-1)
+y_test=to_categorical(y_test-1)
+
+#normalising the range:
+range_norm = function(x,a =0,b =1) {
+  ( (x-min(x))/(max(x)-min(x)) )*(b-a)+a 
+  }
+x_train=apply(x_train,2, range_norm)
+x_test=apply(x_test,2, range_norm)
+```
+
+
+```{r}
+#dimension reductionality:
+pca <-prcomp(x_train)
+prop <-cumsum(pca$sdev^2)/sum(pca$sdev^2)# compute cumulative proportion of variance
+Q <-length( prop[prop<0.99] )
+x_train <-pca$x[,1:Q]
+x_test <-predict(pca, x_test)[,1:Q]
+V =ncol(x_train)
+
+```
+
+
+```{r}
+model<-keras_model_sequential()%>%
+  layer_dense(units=1134,activation="relu",input_shape=V)%>%
+  layer_dense(units=800,activation="relu")%>%
+  layer_dense(units=19,activation="softmax") %>%
+  compile(loss="categorical_crossentropy",optimizer=optimizer_sgd(),metrics="accuracy")
+
+fit<-model%>%fit(x=x_train,y=y_train,
+    validation_data=list(x_test,y_test),
+    epochs=60,verbose=1)
+
+```
+
+```{r}
+tail(fit$metrics$val_accuracy,1)
+```
+
+```{r}
+model1<-keras_model_sequential()%>%
+  layer_dense(units=1134,activation="relu",input_shape=V)%>%
+  layer_dense(units=800,activation="relu")%>%
+  layer_dense(units=500,activation="relu")%>%
+  layer_dense(units=19,activation="softmax") %>%
+  compile(loss="categorical_crossentropy",optimizer=optimizer_sgd(),metrics="accuracy")
+
+fit1<-model1%>%fit(x=x_train,y=y_train,
+    validation_data=list(x_test,y_test),
+    epochs=60,verbose=1)
+
+```
+
+
+```{r}
+tail(fit1$metrics$val_accuracy,1)
+
+```
+
+
+```{r fig.height=5}
+smooth_line<-function(y){
+  x<-1:length(y)
+  out<-predict(loess(y~x))
+  return(out)
+}
+
+cols <- c("red", "yellow","blue","black")
+out <-1-cbind(fit$metrics$accuracy,fit$metrics$val_accuracy,fit1$metrics$accuracy,fit1$metrics$val_accuracy)# check performance
+matplot(out,pch =19,ylab ="Error",xlab ="Epochs",col =adjustcolor(cols,0.5),log ="y")
+matlines(apply(out,2, smooth_line),lty =1,col =cols,lwd =2)
+legend("topright",legend =c("Training 3 layer","Test 3 layer","Training 2 layer","Test 2 layer"),fill =cols,bty ="n")
+apply(out,2, min)
+```
+
+
+```{r}
+model_reg2 <-keras_model_sequential()%>%
+  layer_dense(units =1134,activation ="relu",input_shape =V,
+              kernel_regularizer =regularizer_l2(l =0.009))%>%
+  layer_dense(units =800,activation ="relu",
+              kernel_regularizer =regularizer_l2(l =0.009))%>%
+  layer_dense(units =19,activation ="softmax")%>%
+  compile(loss ="categorical_crossentropy",optimizer =optimizer_sgd(),
+metrics ="accuracy")
+
+# train and evaluate on test data at each epoch
+fit_reg2 <-model_reg2%>%
+  fit(x =x_train,y =y_train,
+      validation_data =list(x_test, y_test),
+      epochs =60,verbose =1)
+
+```
+
+```{r}
+tail(fit_reg2$metrics$val_accuracy,1)
+
+```
+
+```{r}
+# plot to observe the improvement:
+
+cols <-c("blue","black")
+out <-1-cbind(fit_reg2$metrics$accuracy,fit_reg2$metrics$val_accuracy)# check performance
+matplot(out,pch =19,ylab ="Error",xlab ="Epochs",col =adjustcolor(cols,0.5),log ="y")
+matlines(apply(out,2, smooth_line),lty =1,col =cols,lwd =2)
+legend("topright",legend =c("Training","Test"),fill =cols,bty ="n")
+apply(out,2, min)
+
+```
+
+
+```{r }
+#sets for tuning:
+
+l1_set <-c(1134,1100,1000)
+l2_set<-c(1000,800,600)
+lambda_set <-c(0,exp(seq(-6,-4,length =5)))
+```
+
+```{r error=FALSE, message=FALSE, warning=FALSE}
+runs<-tuning_run("model.R",
+                 runs_dir = "run3",
+                 flags = list(lambda=lambda_set,
+                              l1=l1_set,
+                              l2=l2_set),sample = 0.5)
+```
+
+
+```{r}
+read_metrics <-function(path,files =NULL)# 'path' is where the runs are --> e.g. "path/to/runs"
+  {
+  path <-paste0(path,"/")
+  if(is.null(files) ) files <-list.files(path)
+  n <-length(files)
+  out <-vector("list", n)
+  for( i in 1:n ) {
+    dir <-paste0(path, files[i],"/tfruns.d/")
+    out[[i]] <-jsonlite::fromJSON(paste0(dir,"metrics.json"))
+    out[[i]]$flags <-jsonlite::fromJSON(paste0(dir,"flags.json"))
+  } 
+  return(out)
+}
+
+
+plot_learning_curve <-function(x,ylab =NULL,cols =NULL,top =3,span =0.4, ...)
+  {
+  # to add a smooth line to points
+  smooth_line <-function(y) {
+    x <-1:length(y)
+    out <-predict(loess(y~x,span =span) )
+  return(out)
+  }
+matplot(x,ylab =ylab,xlab ="Epochs",type ="n", ...)
+grid()
+matplot(x,pch =19,col =adjustcolor(cols,0.3),add =TRUE)
+tmp <-apply(x,2, smooth_line)
+tmp <-sapply( tmp,"length<-",max(lengths(tmp)) )
+set <-order(apply(tmp,2, max,na.rm =TRUE),decreasing =TRUE)[1:top]
+cl <-rep(cols,ncol(tmp))
+cl[set] <-"deepskyblue2"
+matlines(tmp,lty =1,col =cl,lwd =2)
+}
+#We now extract the learning scores and produce the validation accuracy learning curve. Note that runs have different number of epochs because of early stopping.
+
+out <-read_metrics("run3")
+# extract validation accuracy and plot learning curve
+acc <-sapply(out,"[[","val_accuracy")
+plot_learning_curve(acc,col =adjustcolor("black",0.3),ylim =c(0.85,1),ylab ="Val accuracy",top =3)
+```
+
+```{r}
+#Extracting the result:
+res <- ls_runs(metric_val_accuracy > 0.93,
+runs_dir = "run3", order = metric_val_accuracy)
+```
+
+```{r}
+#Observing the dataframe based on highest val_accuracy to check if we get any better combination after tuning:
+res <-res[,c(2,4,6:8)]
+res
+```
